@@ -263,16 +263,15 @@ display:none;
 <script>
 const CONFIG = {
   token: 'JSpCA0mn3EuNWYubNNWl8kzIL-3FtoNp',
-  server: 'https://sgp1.blynk.cloud',
+  // SỬA LỖI 1: Để blynk.cloud để hệ thống tự động tìm đúng cụm máy chủ, không bị ép cứng ở sgp1
+  server: 'https://blynk.cloud', 
   pins: {
-    state: 'V0',
     distance: 'V1',
     hasCar: 'V2',
     charging: 'V3',
     lock: 'V6',
-    violation: 'V7',
-    safety: 'V8',
     unlockCmd: 'V9'
+    // Đã xóa V0, V7, V8 ra khỏi yêu cầu Fetch để tránh lỗi API 400
   },
   refreshInterval: 2000
 };
@@ -293,7 +292,7 @@ const ICONS = {
 };
 
 function apiUrl(pins) {
-  const pinParams = pins.map(p => p).join('&');
+  const pinParams = pins.join('&');
   return CONFIG.server + '/external/api/get?token=' + CONFIG.token + '&' + pinParams;
 }
 
@@ -303,14 +302,12 @@ function apiUpdateUrl(pin, value) {
 
 async function fetchData() {
   try {
+    // SỬA LỖI 2: Chỉ gọi 4 chân có thực (V1, V2, V3, V6) đang xuất dữ liệu từ C++
     const url = apiUrl([
-      CONFIG.pins.state,
       CONFIG.pins.distance,
       CONFIG.pins.hasCar,
       CONFIG.pins.charging,
-      CONFIG.pins.lock,
-      CONFIG.pins.violation,
-      CONFIG.pins.safety
+      CONFIG.pins.lock
     ]);
     
     const res = await fetch(url);
@@ -326,13 +323,28 @@ async function fetchData() {
 }
 
 function updateUI(data) {
-  const state = parseInt(data[0]) || 0;
-  const distance = parseInt(data[1]) || 0;
-  const hasCar = parseInt(data[2]) || 0;
-  const charging = parseInt(data[3]) || 0;
-  const lock = parseInt(data[4]) || 0;
-  const violation = data[5] || 'none';
-  const safety = parseInt(data[6]) || 0;
+  // Dữ liệu map tương ứng: data[0]=V1, data[1]=V2, data[2]=V3, data[3]=V6
+  const distance = parseInt(data[0]) || 0;
+  const hasCar = parseInt(data[1]) || 0;
+  const charging = parseInt(data[2]) || 0;
+  const lock = parseInt(data[3]) || 0;
+  
+  // SỬA LỖI 3: Trạng thái (State) tự động được Web phân tích qua V2, V3, V6 mà không cần gọi chân V0
+  let state = 0; 
+  let violation = 'none';
+
+  if (lock === 1) { // 1 = Khóa ĐÃ HẠ (xe có thể vào)
+    if (charging === 1) {
+      state = 2; // Đang sạc
+    } else if (hasCar === 1) {
+      state = 1; // Có xe nhưng chưa cắm sạc
+    }
+  } else { // 0 = Khóa ĐANG DỰNG (chặn xe)
+    if (hasCar === 1) {
+      state = 3; // Vi phạm: Xe cố tình lùi đè lên hệ thống khi khóa chưa hạ
+      violation = 'Đỗ sai quy định';
+    }
+  }
   
   // Status banner
   const banner = document.getElementById('statusBanner');
@@ -340,7 +352,7 @@ function updateUI(data) {
   banner.className = 'status-banner ' + stateInfo.cls;
   banner.innerHTML = ICONS[stateInfo.icon] + '<span>' + stateInfo.text + '</span>';
   
-  // Distance
+  // Khoảng cách
   document.getElementById('distanceValue').innerHTML = distance + '<span>cm</span>';
   const distSub = document.getElementById('distanceSub');
   if (distance > 0 && distance < 10) {
@@ -357,23 +369,23 @@ function updateUI(data) {
     distSub.style.color = 'var(--text3)';
   }
   
-  // Gauge
+  // Thanh đo (Gauge)
   updateGauge(distance);
   
-  // Lock
+  // SỬA LỖI 4: Hiển thị đồng bộ với code C++ (V6 = 1 là Đã hạ, V6 = 0 là Đang dựng)
   const lockValue = document.getElementById('lockValue');
   const lockSub = document.getElementById('lockSub');
   if (lock === 1) {
-    lockValue.innerHTML = '<span style="font-size:22px">🔒</span>';
-    lockSub.textContent = 'Khóa đang dựng';
-    lockSub.style.color = 'var(--red)';
-  } else {
     lockValue.innerHTML = '<span style="font-size:22px">🔓</span>';
     lockSub.textContent = 'Khóa đã hạ';
     lockSub.style.color = 'var(--green)';
+  } else {
+    lockValue.innerHTML = '<span style="font-size:22px">🔒</span>';
+    lockSub.textContent = 'Khóa đang dựng';
+    lockSub.style.color = 'var(--red)';
   }
   
-  // Charging
+  // Đang sạc
   const chargingEl = document.getElementById('chargingStatus');
   if (charging === 1) {
     chargingEl.textContent = '⚡ Đang sạc';
@@ -383,36 +395,31 @@ function updateUI(data) {
     chargingEl.style.color = 'var(--text2)';
   }
   
-  // Violation
+  // Vi phạm
   const violationEl = document.getElementById('violationStatus');
   if (violation === 'none' || violation === '') {
     violationEl.textContent = '✓ Không có';
     violationEl.style.color = 'var(--green)';
   } else {
-    const violationMap = {
-      'no_charging': '⚠ Không sạc',
-      'no_leaving': '⚠ Không rời đi',
-      'line_cross': '⚠ Lấn vạch'
-    };
-    violationEl.textContent = violationMap[violation] || ('⚠ ' + violation);
+    violationEl.textContent = '⚠ ' + violation;
     violationEl.style.color = 'var(--orange)';
   }
   
-  // Unlock button state
+  // Nút Hạ Khóa
   const btn = document.getElementById('unlockBtn');
   if (!btn.classList.contains('loading') && !btn.classList.contains('success')) {
-    if (state === 0 && lock === 1) {
+    if (lock === 0) { // Nếu khóa đang dựng thì cho phép nhấn hạ
       btn.className = 'unlock-btn ready';
       btn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M7 11V7a5 5 0 0 1 9.9-1"/></svg> Hạ khóa — cho xe vào';
       btn.disabled = false;
-    } else if (state >= 1) {
+    } else {
       btn.className = 'unlock-btn disabled';
-      btn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg> Ô đang được sử dụng';
+      btn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg> Khóa đã được hạ';
       btn.disabled = true;
     }
   }
   
-  // Last update
+  // Thời gian cập nhật
   const now = new Date();
   document.getElementById('lastUpdate').textContent =
     now.getHours().toString().padStart(2,'0') + ':' +
@@ -429,7 +436,6 @@ function updateGauge(value) {
   const fill = document.getElementById('gaugeFill');
   fill.style.strokeDashoffset = offset;
   
-  // Color based on distance
   if (value > 0 && value < 10) {
     fill.style.stroke = 'var(--red)';
   } else if (value >= 10 && value <= 60) {
@@ -447,32 +453,20 @@ async function handleUnlock() {
   const btn = document.getElementById('unlockBtn');
   if (btn.disabled || btn.classList.contains('loading')) return;
   
-  // Loading state
   btn.className = 'unlock-btn loading';
-  btn.innerHTML = '<span class="spinner"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="20" height="20"><path d="M12 2v4m0 12v4m-7.07-3.93l2.83-2.83m8.48-8.48l2.83-2.83M2 12h4m12 0h4m-3.93 7.07l-2.83-2.83M6.34 6.34L3.51 3.51"/></svg></span> Đang hạ khóa...';
+  btn.innerHTML = '<span class="spinner"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="20" height="20"><path d="M12 2v4m0 12v4m-7.07-3.93l2.83-2.83m8.48-8.48l2.83-2.83M2 12h4m12 0h4m-3.93 7.07l-2.83-2.83M6.34 6.34L3.51 3.51"/></svg></span> Đang xử lý...';
   btn.disabled = true;
   
   try {
     const url = apiUpdateUrl(CONFIG.pins.unlockCmd, 1);
     const res = await fetch(url);
+    if (!res.ok) throw new Error('Lỗi lệnh: ' + res.status);
     
-    if (!res.ok) throw new Error('Lỗi API: ' + res.status);
-    
-    // Success state
     btn.className = 'unlock-btn success';
-    btn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 12l2 2 4-4"/><circle cx="12" cy="12" r="10"/></svg> Đã hạ khóa — xe có thể vào';
+    btn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 12l2 2 4-4"/><circle cx="12" cy="12" r="10"/></svg> Đã gửi lệnh hạ khóa';
     
-
-    
-    // Reset button after 5 seconds
-    setTimeout(() => {
-      btn.className = 'unlock-btn disabled';
-      btn.innerHTML = 'Đang chờ xe vào...';
-      btn.disabled = true;
-    }, 5000);
-    
+    setTimeout(() => { fetchData(); }, 1500); // Lấy lại trạng thái sau 1.5s
     hideError();
-    
   } catch (err) {
     btn.className = 'unlock-btn ready';
     btn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M7 11V7a5 5 0 0 1 9.9-1"/></svg> Hạ khóa — cho xe vào';
@@ -491,7 +485,6 @@ function hideError() {
   document.getElementById('errorMsg').style.display = 'none';
 }
 
-// Start
 fetchData();
 setInterval(fetchData, CONFIG.refreshInterval);
 </script>
